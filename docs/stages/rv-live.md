@@ -42,6 +42,13 @@ The `--state` option enables offset persistence: the stage saves its Kafka
 consumer position to a file and resumes from the same point on restart.
 This prevents re-processing messages after a pipeline restart.
 
+Without `--since`, the stage starts at the end of each topic. With it, the
+stage starts at the first record at or after the given time (its Kafka
+produce time). A saved or already-consumed offset wins over `--since`, also
+on reconnect. Topics created later start at their beginning. If a topic's
+retention no longer reaches back to the time, the stage logs a warning
+naming the topic and the gap.
+
 Connection retries are enabled by default. The stage monitors data
 freshness and reconnects when no data arrives for `--stale` duration.
 
@@ -58,6 +65,7 @@ as different RouteViews peers may use 2-byte or 4-byte ASNs.
 | `--collector-not` | strings | | Exclude collectors whose name starts with this prefix |
 | `--group` | string | *(auto-generated)* | Kafka consumer group ID |
 | `--state` | string | | State file for offset persistence |
+| `--since` | string | | Start at this time: RFC 3339, Unix seconds, or `YYYYMMDD.HHMM` (UTC) |
 | `--refresh` | duration | `5m` | Topic list refresh interval |
 | `--timeout` | duration | `30s` | Connection timeout |
 | `--stale` | duration | `3m` | Reconnect if no data for this long; 0 disables |
@@ -89,6 +97,16 @@ Persist consumer state for resumable processing:
 
 ```bash
 bgpipe -go -- rv-live --state /var/lib/bgpipe/rv-live.state
+```
+
+Load a RouteViews RIB dump into a router, then continue live from the dump time:
+
+```bash
+bgpipe \
+    -- read --wait ESTABLISHED --format mrt route-views.phoix.rib.20261010.1200.bz2 \
+    -- rv-live -W read/STOP --collector phoix --since 20261010.1200 \
+    -- speaker --active --asn 65001 \
+    -- connect 192.0.2.1
 ```
 
 Archive RouteViews data with RPKI validation:
