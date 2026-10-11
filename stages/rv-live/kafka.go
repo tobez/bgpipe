@@ -167,6 +167,10 @@ func (s *RvLive) discoverTopics(client *kgo.Client) ([]string, error) {
 		}
 	}
 
+	if !s.since.IsZero() && len(topics) > 0 {
+		s.checkRetention(ctx, admin, topics)
+	}
+
 	return topics, nil
 }
 

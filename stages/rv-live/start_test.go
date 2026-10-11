@@ -1,10 +1,12 @@
 package rvlive
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -58,4 +60,35 @@ func TestResumeOffsets(t *testing.T) {
 	require.Equal(t, kgo.NewOffset().At(1234), assigned[tracked1][0])
 	require.Equal(t, kgo.NewOffset(), assigned[fresh][0], "untracked partition keeps the reset offset")
 	require.NotContains(t, assigned, gone, "tracked but unassigned topics are not added")
+}
+
+func TestFindTruncated(t *testing.T) {
+	since := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	first := since.Add(90 * time.Minute)
+	ts := first.UnixMilli()
+
+	lo := func(topic string, off, ts int64, err error) map[int32]kadm.ListedOffset {
+		return map[int32]kadm.ListedOffset{0: {Topic: topic, Partition: 0, Offset: off, Timestamp: ts, Err: err}}
+	}
+	after := kadm.ListedOffsets{
+		"a.truncated": lo("a.truncated", 500, ts, nil), // first record after since is the log start
+		"b.ok":        lo("b.ok", 700, ts, nil),        // older records still retained
+		"c.never":     lo("c.never", 0, ts, nil),       // log start 0: nothing ever deleted
+		"d.quiet":     lo("d.quiet", 500, -1, nil),     // no record after since
+		"e.tracked":   lo("e.tracked", 500, ts, nil),   // resumes from a tracked offset
+		"f.err":       lo("f.err", 500, ts, errors.New("x")),
+	}
+	start := kadm.ListedOffsets{
+		"a.truncated": lo("a.truncated", 500, -1, nil),
+		"b.ok":        lo("b.ok", 500, -1, nil),
+		"c.never":     lo("c.never", 0, -1, nil),
+		"d.quiet":     lo("d.quiet", 500, -1, nil),
+		"e.tracked":   lo("e.tracked", 500, -1, nil),
+		"f.err":       lo("f.err", 500, -1, nil),
+	}
+	tracked := map[string]map[int32]int64{"e.tracked": {0: 42}}
+
+	got := findTruncated(after, start, tracked)
+
+	require.Equal(t, []truncation{{Topic: "a.truncated", Partition: 0, First: first}}, got)
 }
