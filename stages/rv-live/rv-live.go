@@ -27,6 +27,7 @@ type RvLive struct {
 	collector_not []string
 	group         string
 	state_file    string
+	since         time.Time
 	refresh       time.Duration
 	timeout       time.Duration
 	stale         time.Duration
@@ -61,6 +62,7 @@ func NewRvLive(parent *core.StageBase) core.Stage {
 	f.StringSlice("collector-not", nil, "collector name must not start with this prefix (on top of topics regex)")
 	f.String("group", "", "consumer group ID (auto-generated if empty)")
 	f.String("state", "", "state file for offset persistence")
+	f.String("since", "", "start at this time: RFC 3339, Unix seconds or YYYYMMDD.HHMM (UTC)")
 	f.Duration("refresh", 5*time.Minute, "topic refresh interval")
 	f.Duration("timeout", 30*time.Second, "connection timeout")
 	f.Duration("stale", 3*time.Minute, "reconnect if no data for this long (0 to disable)")
@@ -83,6 +85,14 @@ func (s *RvLive) Attach() error {
 	s.retry = k.Bool("retry")
 	s.retry_max = k.Int("retry-max")
 	s.keep_aspath = k.Bool("keep-aspath")
+
+	if v := k.String("since"); v != "" {
+		t, err := parseSince(v, time.Now())
+		if err != nil {
+			return fmt.Errorf("--since: %w", err)
+		}
+		s.since = t
+	}
 
 	// parse --collector and --collector-not
 	for _, r := range k.Strings("collector") {
