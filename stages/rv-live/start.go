@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // parseSince parses the --since value: RFC 3339, Unix seconds (from 2001 on),
@@ -25,4 +27,20 @@ func parseSince(v string, now time.Time) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("time %q is in the future", v)
 	}
 	return t.UTC(), nil
+}
+
+// resumeOffsets makes assigned partitions with a tracked offset start there.
+// The others keep their offset, which resolves to the reset offset
+// (--since or the end of the topic). Returns the number of resumed partitions.
+func resumeOffsets(assigned map[string]map[int32]kgo.Offset, tracked map[string]map[int32]int64) int {
+	n := 0
+	for topic, parts := range assigned {
+		for part := range parts {
+			if off, ok := tracked[topic][part]; ok {
+				parts[part] = kgo.NewOffset().At(off)
+				n++
+			}
+		}
+	}
+	return n
 }

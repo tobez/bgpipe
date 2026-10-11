@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 func TestParseSince(t *testing.T) {
@@ -34,4 +35,27 @@ func TestParseSince(t *testing.T) {
 		_, err := parseSince(in, now)
 		require.Error(t, err, in)
 	}
+}
+
+func TestResumeOffsets(t *testing.T) {
+	const (
+		tracked1 = "routeviews.phoix.142271.bmp_raw"
+		fresh    = "routeviews.phoix.9927.bmp_raw" // assigned, never consumed (e.g. new peer)
+		gone     = "routeviews.linx.6762.bmp_raw"  // tracked, not assigned now
+	)
+	assigned := map[string]map[int32]kgo.Offset{
+		tracked1: {0: kgo.NewOffset()},
+		fresh:    {0: kgo.NewOffset()},
+	}
+	tracked := map[string]map[int32]int64{
+		tracked1: {0: 1234},
+		gone:     {0: 99},
+	}
+
+	n := resumeOffsets(assigned, tracked)
+
+	require.Equal(t, 1, n)
+	require.Equal(t, kgo.NewOffset().At(1234), assigned[tracked1][0])
+	require.Equal(t, kgo.NewOffset(), assigned[fresh][0], "untracked partition keeps the reset offset")
+	require.NotContains(t, assigned, gone, "tracked but unassigned topics are not added")
 }

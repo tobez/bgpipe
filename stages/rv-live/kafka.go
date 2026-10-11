@@ -12,11 +12,16 @@ import (
 func (s *RvLive) runKafka() error {
 	s.Info().Str("broker", s.broker).Str("group", s.group).Msg("connecting")
 
+	reset := kgo.NewOffset().AtEnd()
+	if !s.since.IsZero() {
+		reset = kgo.NewOffset().AfterMilli(s.since.UnixMilli())
+	}
+
 	// Build client options - based on libbgpstream/rdkafka configuration
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(s.broker),
 		kgo.ConsumerGroup(s.group),
-		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
+		kgo.ConsumeResetOffset(reset),
 		kgo.DisableAutoCommit(),
 
 		// Use roundrobin balancer for even partition distribution (like bgpstream)
@@ -40,6 +45,18 @@ func (s *RvLive) runKafka() error {
 				count += len(parts)
 			}
 			s.Info().Int("topics", len(assigned)).Int("partitions", count).Msg("partitions assigned")
+		}),
+		// start where we left off (state file or an earlier connection), else at the reset offset
+		kgo.AdjustFetchOffsetsFn(func(_ context.Context, assigned map[string]map[int32]kgo.Offset) (map[string]map[int32]kgo.Offset, error) {
+			s.state_mu.Lock()
+			resumed := resumeOffsets(assigned, s.state.Offsets)
+			s.state_mu.Unlock()
+			total := 0
+			for _, parts := range assigned {
+				total += len(parts)
+			}
+			s.Info().Int("resumed", resumed).Int("partitions", total).Str("reset", reset.String()).Msg("start offsets")
+			return assigned, nil
 		}),
 		kgo.OnPartitionsRevoked(func(_ context.Context, _ *kgo.Client, revoked map[string][]int32) {
 			count := 0
@@ -78,13 +95,6 @@ func (s *RvLive) runKafka() error {
 
 	s.Info().Int("count", len(topics)).Msg("subscribing to topics")
 	client.AddConsumeTopics(topics...)
-
-	// Seek to saved offsets if we have state
-	if s.state_file != "" && len(s.state.Offsets) > 0 {
-		if err := s.seekToSavedOffsets(client, topics); err != nil {
-			s.Warn().Err(err).Msg("failed to seek to saved offsets")
-		}
-	}
 
 	// Start state saver goroutine
 	stateSaverDone := make(chan struct{})
@@ -158,26 +168,6 @@ func (s *RvLive) discoverTopics(client *kgo.Client) ([]string, error) {
 	}
 
 	return topics, nil
-}
-
-func (s *RvLive) seekToSavedOffsets(client *kgo.Client, topics []string) error {
-	offsets := make(map[string]map[int32]kgo.EpochOffset)
-
-	for _, topic := range topics {
-		if partOffsets, ok := s.state.Offsets[topic]; ok {
-			offsets[topic] = make(map[int32]kgo.EpochOffset)
-			for part, off := range partOffsets {
-				offsets[topic][part] = kgo.EpochOffset{Epoch: -1, Offset: off}
-			}
-		}
-	}
-
-	if len(offsets) > 0 {
-		s.Debug().Interface("offsets", offsets).Msg("seeking to saved offsets")
-		client.SetOffsets(offsets)
-	}
-
-	return nil
 }
 
 func (s *RvLive) topicRefresher(client *kgo.Client, done <-chan struct{}) {
