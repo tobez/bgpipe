@@ -9,19 +9,16 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-func (s *RvLive) runKafka() error {
+// runKafka consumes until an error; partitions without a tracked offset
+// start at from, or at the end of the topic if from is zero.
+func (s *RvLive) runKafka(from time.Time) error {
 	s.Info().Str("broker", s.broker).Str("group", s.group).Msg("connecting")
-
-	reset := kgo.NewOffset().AtEnd()
-	if !s.since.IsZero() {
-		reset = kgo.NewOffset().AfterMilli(s.since.UnixMilli())
-	}
 
 	// Build client options - based on libbgpstream/rdkafka configuration
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(s.broker),
 		kgo.ConsumerGroup(s.group),
-		kgo.ConsumeResetOffset(reset),
+		kgo.ConsumeResetOffset(startOffset(from)),
 		kgo.DisableAutoCommit(),
 
 		// Use roundrobin balancer for even partition distribution (like bgpstream)
@@ -46,7 +43,7 @@ func (s *RvLive) runKafka() error {
 			}
 			s.Info().Int("topics", len(assigned)).Int("partitions", count).Msg("partitions assigned")
 		}),
-		// start where we left off (state file or an earlier connection), else at the reset offset
+		// start where we left off (state file or an earlier connection), else from the start time
 		kgo.AdjustFetchOffsetsFn(func(_ context.Context, assigned map[string]map[int32]kgo.Offset) (map[string]map[int32]kgo.Offset, error) {
 			s.state_mu.Lock()
 			resumed := resumeOffsets(assigned, s.state.Offsets)
@@ -55,7 +52,13 @@ func (s *RvLive) runKafka() error {
 			for _, parts := range assigned {
 				total += len(parts)
 			}
-			s.Info().Int("resumed", resumed).Int("partitions", total).Str("reset", reset.String()).Msg("start offsets")
+			ev := s.Info().Int("resumed", resumed).Int("partitions", total)
+			if from.IsZero() {
+				ev = ev.Str("from", "end")
+			} else {
+				ev = ev.Time("from", from)
+			}
+			ev.Msg("start offsets")
 			return assigned, nil
 		}),
 		kgo.OnPartitionsRevoked(func(_ context.Context, _ *kgo.Client, revoked map[string][]int32) {
@@ -84,7 +87,7 @@ func (s *RvLive) runKafka() error {
 
 	// Discover and subscribe to topics
 	s.Debug().Str("pattern", s.topics).Msg("discovering topics")
-	topics, err := s.discoverTopics(client)
+	topics, err := s.discoverTopics(client, from)
 	if err != nil {
 		return fmt.Errorf("failed to discover topics: %w", err)
 	} else if len(topics) == 0 {
@@ -104,7 +107,7 @@ func (s *RvLive) runKafka() error {
 
 	// Start topic refresher goroutine
 	refreshDone := make(chan struct{})
-	go s.topicRefresher(client, refreshDone)
+	go s.topicRefresher(client, refreshDone, from)
 	s.Debug().Dur("interval", s.refresh).Msg("started topic refresher")
 
 	// Consume messages
@@ -122,7 +125,7 @@ func (s *RvLive) runKafka() error {
 	return err
 }
 
-func (s *RvLive) discoverTopics(client *kgo.Client) ([]string, error) {
+func (s *RvLive) discoverTopics(client *kgo.Client, from time.Time) ([]string, error) {
 	ctx, cancel := context.WithTimeout(s.Ctx, s.timeout)
 	defer cancel()
 
@@ -167,14 +170,14 @@ func (s *RvLive) discoverTopics(client *kgo.Client) ([]string, error) {
 		}
 	}
 
-	if !s.since.IsZero() && len(topics) > 0 {
-		s.checkRetention(ctx, admin, topics)
+	if !from.IsZero() && len(topics) > 0 {
+		s.checkRetention(ctx, admin, topics, from)
 	}
 
 	return topics, nil
 }
 
-func (s *RvLive) topicRefresher(client *kgo.Client, done <-chan struct{}) {
+func (s *RvLive) topicRefresher(client *kgo.Client, done <-chan struct{}, from time.Time) {
 	if s.refresh <= 0 {
 		return // disabled
 	}
@@ -190,7 +193,7 @@ func (s *RvLive) topicRefresher(client *kgo.Client, done <-chan struct{}) {
 			return
 		case <-ticker.C:
 			s.Debug().Msg("refreshing topic list")
-			topics, err := s.discoverTopics(client)
+			topics, err := s.discoverTopics(client, from)
 			if err != nil {
 				s.Warn().Err(err).Msg("failed to refresh topics")
 				continue

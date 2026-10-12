@@ -32,9 +32,41 @@ func parseSince(v string, now time.Time) (time.Time, error) {
 	return t.UTC(), nil
 }
 
+// startFrom returns the time where partitions without a tracked offset start:
+// --since, else where the previous connection's untracked partitions started,
+// else the save time of the loaded state file. Zero means the end of the topic.
+func startFrom(since, prev, saved time.Time) time.Time {
+	switch {
+	case !since.IsZero():
+		return since
+	case !prev.IsZero():
+		return prev
+	default:
+		return saved
+	}
+}
+
+// nextFrom returns the prev value for startFrom on the next connection:
+// the from-time of a connection that began at began, or began itself if it
+// started at the end (its untracked partitions have nothing before began).
+func nextFrom(from, began time.Time) time.Time {
+	if from.IsZero() {
+		return began
+	}
+	return from
+}
+
+// startOffset returns the Kafka offset for a startFrom time.
+func startOffset(from time.Time) kgo.Offset {
+	if from.IsZero() {
+		return kgo.NewOffset().AtEnd()
+	}
+	return kgo.NewOffset().AfterMilli(from.UnixMilli())
+}
+
 // resumeOffsets makes assigned partitions with a tracked offset start there.
-// The others keep their offset, which resolves to the reset offset
-// (--since or the end of the topic). Returns the number of resumed partitions.
+// The others keep their offset, which franz-go sets to the start offset
+// (see startOffset). Returns the number of resumed partitions.
 func resumeOffsets(assigned map[string]map[int32]kgo.Offset, tracked map[string]map[int32]int64) int {
 	n := 0
 	for topic, parts := range assigned {
@@ -48,7 +80,7 @@ func resumeOffsets(assigned map[string]map[int32]kgo.Offset, tracked map[string]
 	return n
 }
 
-// truncation is a partition whose log no longer reaches back to --since:
+// truncation is a partition whose log no longer reaches back to the start time:
 // First is the time of its oldest retained record.
 type truncation struct {
 	Topic     string
@@ -57,8 +89,8 @@ type truncation struct {
 }
 
 // findTruncated returns untracked partitions where the first record after
-// --since is also the log start, while older records were deleted (start > 0).
-// Then records between --since and First may be lost.
+// the start time is also the log start, while older records were deleted
+// (start > 0). Then records between the start time and First may be lost.
 func findTruncated(after, start kadm.ListedOffsets, tracked map[string]map[int32]int64) []truncation {
 	var out []truncation
 	after.Each(func(a kadm.ListedOffset) {
@@ -80,11 +112,12 @@ func findTruncated(after, start kadm.ListedOffsets, tracked map[string]map[int32
 	return out
 }
 
-// checkRetention warns once per topic whose retention does not reach --since.
-func (s *RvLive) checkRetention(ctx context.Context, admin *kadm.Client, topics []string) {
-	after, err := admin.ListOffsetsAfterMilli(ctx, s.since.UnixMilli(), topics...)
+// checkRetention warns once per topic whose retention does not reach the
+// start time from.
+func (s *RvLive) checkRetention(ctx context.Context, admin *kadm.Client, topics []string, from time.Time) {
+	after, err := admin.ListOffsetsAfterMilli(ctx, from.UnixMilli(), topics...)
 	if err != nil {
-		s.Warn().Err(err).Msg("retention check: listing offsets after --since failed")
+		s.Warn().Err(err).Msg("retention check: listing offsets after the start time failed")
 		return
 	}
 	start, err := admin.ListStartOffsets(ctx, topics...)
@@ -101,7 +134,7 @@ func (s *RvLive) checkRetention(ctx context.Context, admin *kadm.Client, topics 
 		}
 		s.retention_warned[tr.Topic] = true
 		s.Warn().Str("topic", tr.Topic).Int32("partition", tr.Partition).
-			Time("first", tr.First).Dur("gap", tr.First.Sub(s.since)).
-			Msg("Kafka retention does not reach --since, updates before first may be lost")
+			Time("from", from).Time("first", tr.First).Dur("gap", tr.First.Sub(from)).
+			Msg("Kafka retention does not reach the start time, updates before first may be lost")
 	}
 }

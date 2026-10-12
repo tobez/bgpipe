@@ -40,7 +40,7 @@ type RvLive struct {
 	state_mu    sync.Mutex
 	state_dirty bool
 
-	// topics already warned about retention not reaching --since
+	// topics already warned about retention not reaching the start time
 	retention_warned map[string]bool
 
 	// reusable parsers
@@ -143,6 +143,12 @@ func (s *RvLive) Attach() error {
 func (s *RvLive) Run() error {
 	defer s.in.Close()
 
+	// untracked partitions start from here, see startFrom
+	s.state_mu.Lock()
+	saved := s.state.UpdatedAt
+	s.state_mu.Unlock()
+	var prev time.Time
+
 	lastTry := time.Now()
 	for try := 1; s.Ctx.Err() == nil; try++ {
 		// Reset try count after long success
@@ -166,7 +172,9 @@ func (s *RvLive) Run() error {
 		}
 
 		// Run Kafka consumer
-		err := s.runKafka()
+		from := startFrom(s.since, prev, saved)
+		prev = nextFrom(from, time.Now())
+		err := s.runKafka(from)
 		if err == nil || s.Ctx.Err() != nil {
 			return err
 		}

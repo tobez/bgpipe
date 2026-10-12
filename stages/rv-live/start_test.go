@@ -92,3 +92,40 @@ func TestFindTruncated(t *testing.T) {
 
 	require.Equal(t, []truncation{{Topic: "a.truncated", Partition: 0, First: first}}, got)
 }
+
+func TestStartFrom(t *testing.T) {
+	since := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	prev := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	saved := time.Date(2026, 10, 11, 8, 0, 0, 0, time.UTC)
+	var zero time.Time
+
+	for _, tc := range []struct {
+		name               string
+		since, prev, saved time.Time
+		want               time.Time
+	}{
+		{"since wins over all", since, prev, saved, since},
+		{"since alone", since, zero, zero, since},
+		{"previous connection wins over state", zero, prev, saved, prev},
+		{"previous connection alone", zero, prev, zero, prev},
+		{"state file save time", zero, zero, saved, saved},
+		{"nothing: end of topic", zero, zero, zero, zero},
+	} {
+		require.Equal(t, tc.want, startFrom(tc.since, tc.prev, tc.saved), tc.name)
+	}
+}
+
+func TestNextFrom(t *testing.T) {
+	from := time.Date(2026, 10, 11, 8, 0, 0, 0, time.UTC)
+	began := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+
+	require.Equal(t, from, nextFrom(from, began), "untracked partitions of the previous connection started at from")
+	require.Equal(t, began, nextFrom(time.Time{}, began), "previous connection started at the end")
+}
+
+func TestStartOffset(t *testing.T) {
+	from := time.Date(2026, 10, 11, 8, 0, 0, 0, time.UTC)
+
+	require.Equal(t, kgo.NewOffset().AtEnd(), startOffset(time.Time{}))
+	require.Equal(t, kgo.NewOffset().AfterMilli(from.UnixMilli()), startOffset(from))
+}
