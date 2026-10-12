@@ -42,12 +42,16 @@ The `--state` option enables offset persistence: the stage saves its Kafka
 consumer position to a file and resumes from the same point on restart.
 This prevents re-processing messages after a pipeline restart.
 
-Without `--since`, the stage starts at the end of each topic. With it, the
-stage starts at the first record at or after the given time (its Kafka
-produce time). A saved or already-consumed offset wins over `--since`, also
-on reconnect. Topics created later start at their beginning. If a topic's
-retention no longer reaches back to the time, the stage logs a warning
-naming the topic and the gap.
+Without `--since`, a first start begins at the end of each topic. With it,
+the stage starts at the first record at or after the given time (its Kafka
+produce time). On reconnect, and on restart with `--state`, each partition
+resumes at its saved offset, which wins over `--since`. Partitions without
+one start at `--since`, else at the state file's save time or the start of
+the previous connection. A saved offset that Kafka retention already deleted
+resumes at the oldest retained record. Topics created later start at their
+beginning, unless the stage started at the end. Warnings name topics whose
+retention does not reach the start time, and topics whose saved offsets
+retention already deleted.
 
 Connection retries are enabled by default. The stage monitors data
 freshness and reconnects when no data arrives for `--stale` duration.
@@ -65,7 +69,7 @@ as different RouteViews peers may use 2-byte or 4-byte ASNs.
 | `--collector-not` | strings | | Exclude collectors whose name starts with this prefix |
 | `--group` | string | *(auto-generated)* | Kafka consumer group ID |
 | `--state` | string | | State file for offset persistence |
-| `--since` | string | | Start at this time: RFC 3339, Unix seconds, or `YYYYMMDD.HHMM` (UTC) |
+| `--since` | string | | Start at this past time: RFC 3339, Unix seconds (from 2001 on), or `YYYYMMDD.HHMM` (UTC) |
 | `--refresh` | duration | `5m` | Topic list refresh interval |
 | `--timeout` | duration | `30s` | Connection timeout |
 | `--stale` | duration | `3m` | Reconnect if no data for this long; 0 disables |
