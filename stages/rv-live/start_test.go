@@ -30,6 +30,7 @@ func TestParseSince(t *testing.T) {
 		"999999999",            // Unix seconds before 2001
 		"2026-10-12T00:00:00Z", // in the future
 		"20261012.0000",        // in the future
+		"1791763200",           // Unix seconds in the future
 		"20261010.12",
 		"yesterday",
 		"-1791633600",
@@ -77,6 +78,8 @@ func TestFindTruncated(t *testing.T) {
 		"d.quiet":     lo("d.quiet", 500, -1, nil),     // no record after since
 		"e.tracked":   lo("e.tracked", 500, ts, nil),   // resumes from a tracked offset
 		"f.err":       lo("f.err", 500, ts, errors.New("x")),
+		"g.nostart":   lo("g.nostart", 500, ts, nil), // missing from start
+		"h.starterr":  lo("h.starterr", 500, ts, nil),
 	}
 	start := kadm.ListedOffsets{
 		"a.truncated": lo("a.truncated", 500, -1, nil),
@@ -85,6 +88,7 @@ func TestFindTruncated(t *testing.T) {
 		"d.quiet":     lo("d.quiet", 500, -1, nil),
 		"e.tracked":   lo("e.tracked", 500, -1, nil),
 		"f.err":       lo("f.err", 500, -1, nil),
+		"h.starterr":  lo("h.starterr", 500, -1, errors.New("x")),
 	}
 	tracked := map[string]map[int32]int64{"e.tracked": {0: 42}}
 
