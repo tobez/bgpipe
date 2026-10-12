@@ -58,7 +58,7 @@ func TestResumeOffsets(t *testing.T) {
 
 	require.Equal(t, 1, n)
 	require.Equal(t, kgo.NewOffset().At(1234), assigned[tracked1][0])
-	require.Equal(t, kgo.NewOffset(), assigned[fresh][0], "untracked partition keeps the reset offset")
+	require.Equal(t, kgo.NewOffset(), assigned[fresh][0], "untracked partition keeps the start offset")
 	require.NotContains(t, assigned, gone, "tracked but unassigned topics are not added")
 }
 
@@ -128,4 +128,28 @@ func TestStartOffset(t *testing.T) {
 
 	require.Equal(t, kgo.NewOffset().AtEnd(), startOffset(time.Time{}))
 	require.Equal(t, kgo.NewOffset().AfterMilli(from.UnixMilli()), startOffset(from))
+}
+
+func TestFindExpired(t *testing.T) {
+	lo := func(topic string, off int64, err error) map[int32]kadm.ListedOffset {
+		return map[int32]kadm.ListedOffset{0: {Topic: topic, Partition: 0, Offset: off, Timestamp: -1, Err: err}}
+	}
+	start := kadm.ListedOffsets{
+		"a.expired":   lo("a.expired", 500, nil), // saved offset deleted by retention
+		"b.equal":     lo("b.equal", 500, nil),   // saved offset is the log start
+		"c.above":     lo("c.above", 500, nil),
+		"d.untracked": lo("d.untracked", 500, nil),
+		"e.err":       lo("e.err", 500, errors.New("x")),
+	}
+	tracked := map[string]map[int32]int64{
+		"a.expired": {0: 42},
+		"b.equal":   {0: 500},
+		"c.above":   {0: 600},
+		"e.err":     {0: 42},
+		"f.missing": {0: 42}, // not in start
+	}
+
+	got := findExpired(start, tracked)
+
+	require.Equal(t, []expiry{{Topic: "a.expired", Partition: 0, Saved: 42, Start: 500}}, got)
 }

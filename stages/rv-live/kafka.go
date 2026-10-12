@@ -18,7 +18,11 @@ func (s *RvLive) runKafka(from time.Time) error {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(s.broker),
 		kgo.ConsumerGroup(s.group),
-		kgo.ConsumeResetOffset(startOffset(from)),
+		// untracked partitions start here; a saved offset that retention
+		// already deleted (OFFSET_OUT_OF_RANGE on the first fetch) resets to
+		// the oldest retained record
+		kgo.ConsumeStartOffset(startOffset(from)),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
 		kgo.DisableAutoCommit(),
 
 		// Use roundrobin balancer for even partition distribution (like bgpstream)
@@ -170,7 +174,7 @@ func (s *RvLive) discoverTopics(client *kgo.Client, from time.Time) ([]string, e
 		}
 	}
 
-	if !from.IsZero() && len(topics) > 0 {
+	if len(topics) > 0 {
 		s.checkRetention(ctx, admin, topics, from)
 	}
 

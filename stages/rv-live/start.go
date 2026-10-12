@@ -104,26 +104,67 @@ func findTruncated(after, start kadm.ListedOffsets, tracked map[string]map[int32
 		out = append(out, truncation{Topic: a.Topic, Partition: a.Partition, First: time.UnixMilli(a.Timestamp).UTC()})
 	})
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Topic != out[j].Topic {
-			return out[i].Topic < out[j].Topic
-		}
-		return out[i].Partition < out[j].Partition
+		return partitionLess(out[i].Topic, out[i].Partition, out[j].Topic, out[j].Partition)
 	})
 	return out
 }
 
+// expiry is a partition whose saved offset lies below its log start:
+// records from Saved to Start were deleted before they could be read.
+type expiry struct {
+	Topic     string
+	Partition int32
+	Saved     int64
+	Start     int64
+}
+
+// findExpired returns tracked partitions whose offset is below the log start.
+func findExpired(start kadm.ListedOffsets, tracked map[string]map[int32]int64) []expiry {
+	var out []expiry
+	start.Each(func(st kadm.ListedOffset) {
+		saved, ok := tracked[st.Topic][st.Partition]
+		if !ok || st.Err != nil || saved >= st.Offset {
+			return
+		}
+		out = append(out, expiry{Topic: st.Topic, Partition: st.Partition, Saved: saved, Start: st.Offset})
+	})
+	sort.Slice(out, func(i, j int) bool {
+		return partitionLess(out[i].Topic, out[i].Partition, out[j].Topic, out[j].Partition)
+	})
+	return out
+}
+
+// partitionLess orders partitions by topic, then partition number.
+func partitionLess(topic1 string, part1 int32, topic2 string, part2 int32) bool {
+	if topic1 != topic2 {
+		return topic1 < topic2
+	}
+	return part1 < part2
+}
+
 // checkRetention warns once per topic whose retention does not reach the
-// start time from.
+// start time from (unless zero), and once per topic whose retention deleted
+// records after a saved offset.
 func (s *RvLive) checkRetention(ctx context.Context, admin *kadm.Client, topics []string, from time.Time) {
-	after, err := admin.ListOffsetsAfterMilli(ctx, from.UnixMilli(), topics...)
-	if err != nil {
-		s.Warn().Err(err).Msg("retention check: listing offsets after the start time failed")
+	s.state_mu.Lock()
+	resuming := len(s.state.Offsets) > 0
+	s.state_mu.Unlock()
+	if from.IsZero() && !resuming {
 		return
 	}
+
 	start, err := admin.ListStartOffsets(ctx, topics...)
 	if err != nil {
 		s.Warn().Err(err).Msg("retention check: listing start offsets failed")
 		return
+	}
+	var after kadm.ListedOffsets
+	if !from.IsZero() {
+		after, err = admin.ListOffsetsAfterMilli(ctx, from.UnixMilli(), topics...)
+		if err != nil {
+			s.Warn().Err(err).Msg("retention check: listing offsets after the start time failed")
+			return
+		}
 	}
 
 	s.state_mu.Lock()
@@ -136,5 +177,14 @@ func (s *RvLive) checkRetention(ctx context.Context, admin *kadm.Client, topics 
 		s.Warn().Str("topic", tr.Topic).Int32("partition", tr.Partition).
 			Time("from", from).Time("first", tr.First).Dur("gap", tr.First.Sub(from)).
 			Msg("Kafka retention does not reach the start time, updates before first may be lost")
+	}
+	for _, ex := range findExpired(start, s.state.Offsets) {
+		if s.expiry_warned[ex.Topic] {
+			continue
+		}
+		s.expiry_warned[ex.Topic] = true
+		s.Warn().Str("topic", ex.Topic).Int32("partition", ex.Partition).
+			Int64("saved", ex.Saved).Int64("start", ex.Start).
+			Msg("Kafka retention deleted records after the saved offset, updates before start are lost")
 	}
 }

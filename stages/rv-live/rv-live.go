@@ -43,6 +43,9 @@ type RvLive struct {
 	// topics already warned about retention not reaching the start time
 	retention_warned map[string]bool
 
+	// topics already warned about saved offsets below the log start
+	expiry_warned map[string]bool
+
 	// reusable parsers
 	obmp_msg *bmp.OpenBmp
 	bmp_msg  *bmp.Bmp
@@ -121,6 +124,7 @@ func (s *RvLive) Attach() error {
 	s.obmp_msg = bmp.NewOpenBmp()
 	s.bmp_msg = bmp.NewBmp()
 	s.retention_warned = make(map[string]bool)
+	s.expiry_warned = make(map[string]bool)
 
 	// Load state file if specified
 	if s.state_file != "" {
